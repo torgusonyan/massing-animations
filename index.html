@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gubahan Massa — Massing Animation</title>
+<style>
+  :root { --red: #f01e1e; --redDark: #c71414; --yellow: #ffb300; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #0d0d0f; overflow: hidden; font-family: Arial, Helvetica, sans-serif; }
+  /* 16:9 stage, letterboxed to fit any window */
+  #stage {
+    position: absolute; inset: 0; margin: auto;
+    width: min(100vw, 177.78vh); height: min(56.25vw, 100vh);
+    background: #e9ebee;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  /* Upper-left sequential caption */
+  #caption {
+    position: absolute; top: 4.2%; left: 3.5%;
+    max-width: 46%;
+    color: #1b1b1b;
+    font-weight: 800;
+    font-size: clamp(14px, 2.1vw, 34px);
+    line-height: 1.22;
+    letter-spacing: -0.01em;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.6);
+    transition: opacity .35s ease, transform .35s ease;
+  }
+  #stepnum {
+    display: inline-block;
+    color: #fff; background: var(--red);
+    border-radius: 50%;
+    width: 1.55em; height: 1.55em; line-height: 1.55em;
+    text-align: center; margin-right: .4em;
+    font-size: .92em;
+    box-shadow: 0 3px 8px rgba(0,0,0,.2);
+  }
+  #caption.swap { opacity: 0; transform: translateY(-8px); }
+
+  /* progress + controls */
+  #bar { position: absolute; left: 0; bottom: 0; height: 5px; width: 0%; background: var(--red); transition: width .15s linear; }
+  #controls {
+    position: absolute; bottom: 2.5%; right: 2.5%;
+    display: flex; gap: 8px; align-items: center;
+    font-size: clamp(11px, 1.1vw, 15px);
+  }
+  #controls button {
+    border: none; border-radius: 999px; padding: .55em 1.1em;
+    background: rgba(27,27,27,.82); color: #fff; cursor: pointer; font-weight: 700;
+  }
+  #controls button:hover { background: #000; }
+  #hint {
+    position:absolute; bottom:2.6%; left:3.5%;
+    font-size: clamp(10px,1vw,13px); color:#6a6a6a; font-weight:600;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="caption"><span id="stepnum">1</span><span id="captext">Massa dasar bangunan</span></div>
+  <div id="hint">Rekam jendela ini untuk membuat video Short Anda</div>
+  <div id="controls">
+    <button id="replay">↻ Ulangi</button>
+    <button id="pause">❚❚ Jeda</button>
+  </div>
+  <div id="bar"></div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------------
+// SCENE / RENDERER  (16:9 locked isometric)
+// ---------------------------------------------------------------------------
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9ebee);
+
+// Locked isometric orthographic camera (matches reference frames)
+const frustum = 22;
+let camera = new THREE.OrthographicCamera(-frustum, frustum, frustum, -frustum, -500, 1000);
+camera.position.set(20, 17, 20);
+camera.lookAt(0, 3, 0);
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  const aspect = w / h;
+  camera.left = -frustum * aspect; camera.right = frustum * aspect;
+  camera.top = frustum; camera.bottom = -frustum;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+// ---------------------------------------------------------------------------
+// LIGHTS  (soft ambient-occlusion look)
+// ---------------------------------------------------------------------------
+scene.add(new THREE.HemisphereLight(0xffffff, 0xbfc3c9, 1.05));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(18, 30, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+const s = 40;
+Object.assign(sun.shadow.camera, { left:-s, right:s, top:s, bottom:-s, near:1, far:120 });
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+fill.position.set(-15, 12, -8);
+scene.add(fill);
+
+// ---------------------------------------------------------------------------
+// MATERIALS
+// ---------------------------------------------------------------------------
+const matWhite  = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
+const matRed    = new THREE.MeshStandardMaterial({ color: 0xf01e1e, roughness: 0.75, metalness: 0 });
+const matGhost  = new THREE.MeshStandardMaterial({ color: 0xf0504f, roughness: 0.6, transparent: true, opacity: 0.32, depthWrite: false });
+const matGround = new THREE.MeshStandardMaterial({ color: 0xdfe2e6, roughness: 1 });
+const matRoad   = new THREE.MeshStandardMaterial({ color: 0xcccfd4, roughness: 1 });
+const matCtx    = new THREE.MeshStandardMaterial({ color: 0xe4e6ea, roughness: 1 });
+const matPlot   = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
+const matTree   = new THREE.MeshStandardMaterial({ color: 0xd7dadf, roughness: 1 });
+const matYellow = new THREE.MeshStandardMaterial({ color: 0xffb300, roughness: 0.5, emissive: 0x3a2600, emissiveIntensity: 0.25 });
+
+const edgeMat = new THREE.LineBasicMaterial({ color: 0x1b1b1b, transparent: true, opacity: 0.55 });
+function boxWithEdges(w, h, d, mat) {
+  const g = new THREE.Group();
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, mat.clone());
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  g.add(mesh);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat.clone());
+  g.add(edges);
+  g.userData.mesh = mesh; g.userData.edges = edges; g.userData.geo = geo;
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// SITE CONTEXT  (ground, roads, surrounding blocks, cylindrical trees)
+// ---------------------------------------------------------------------------
+const site = new THREE.Group(); scene.add(site);
+
+const ground = new THREE.Mesh(new THREE.BoxGeometry(120, 1, 120), matGround);
+ground.position.y = -0.5; ground.receiveShadow = true; site.add(ground);
+
+// two perpendicular roads crossing near the plot
+function road(w, d, x, z) {
+  const r = new THREE.Mesh(new THREE.BoxGeometry(w, 1.02, d), matRoad);
+  r.position.set(x, 0.01, z); r.receiveShadow = true; site.add(r);
+}
+road(120, 7, 0, 10);      // road running along front-left ("Jalan Mutiara Raya")
+road(7, 120, -14, 0);     // cross street
+
+// the corner plot (white pad the building sits on)
+const plot = new THREE.Mesh(new THREE.BoxGeometry(17, 1.04, 17), matPlot);
+plot.position.set(0, 0.02, 0); plot.receiveShadow = true; site.add(plot);
+
+// surrounding low-rise blocks (grid, skipping the center plot & roads)
+function contextBlock(x, z, w, d, h) {
+  const b = boxWithEdges(w, h, d, matCtx);
+  b.position.set(x, h/2 + 0.5, z);
+  b.userData.edges.material.opacity = 0.18;
+  site.add(b);
+}
+const blockDefs = [
+  // back-right cluster (fine grid)
+  [16,-16,6,6,7],[24,-16,6,6,6],[32,-16,6,6,8],[16,-24,6,6,6],[24,-24,6,6,7],[32,-24,6,6,6],
+  [16,-8,6,5,5],[24,-8,6,5,6],[32,-8,6,5,7],
+  // right side
+  [20,8,8,8,5],[30,6,8,10,6],[20,20,9,8,7],[33,20,8,9,6],
+  // back-left big slabs
+  [-18,-20,12,10,8],[-30,-18,10,9,9],[-16,-32,11,8,7],
+  // left
+  [-24,6,9,8,6],[-26,20,10,9,7],
+  // front-right
+  [16,30,9,8,6],[30,30,9,8,7],
+];
+blockDefs.forEach(b => contextBlock(b[0],b[1],b[2],b[3],b[4]));
+
+// cylindrical trees along the near road
+function tree(x, z) {
+  const t = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 3, 16), matTree);
+  t.position.set(x, 1.5 + 0.5, z); t.castShadow = true; t.receiveShadow = true; site.add(t);
+}
+[-11,-8,-5,-2,1].forEach((x,i)=> tree(x, 8.5 + (i%2)*0.3));
+tree(-9,6); tree(-6,6.2);
+
+// ---------------------------------------------------------------------------
+// STREET LABEL  "Jalan Mutiara Raya"  (canvas texture on the road)
+// ---------------------------------------------------------------------------
+function makeLabel(text) {
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.fillStyle = '#5a5d63'; ctx.font = 'bold 120px Arial'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 20, 128);
+  const tex = new THREE.CanvasTexture(c); tex.anisotropy = 8;
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(22, 5.5), mat);
+  mesh.rotation.x = -Math.PI/2;
+  return mesh;
+}
+const streetLabel = makeLabel('Jalan Mutiara Raya');
+streetLabel.position.set(-16, 0.56, 12);
+streetLabel.rotation.z = 0; // runs along the road
+site.add(streetLabel);
+
+// ---------------------------------------------------------------------------
+// THE BUILDING MASS  (animated subject)
+// Built from parts so we can carve, slice, and add through the sequence.
+// ---------------------------------------------------------------------------
+const BW = 11, BD = 8, BH = 11;          // base mass dims
+const mass = new THREE.Group(); scene.add(mass);
+
+// base block
+const base = boxWithEdges(BW, BH, BD, matWhite);
+base.position.y = BH/2 + 0.52;
+mass.add(base);
+
+// --- void block (step 3) : a hole carved in the top-center ---
+const voidPart = boxWithEdges(3.6, 4.2, 3.2, matRed);
+voidPart.userData.mesh.material = new THREE.MeshStandardMaterial({ color:0x7a0d0d, roughness:0.9 });
+voidPart.position.set(1.2, BH + 0.52 - 2.1, 0);
+voidPart.visible = false; mass.add(voidPart);
+
+// --- roof slice ghost (step 4) ---
+const roofGhost = boxWithEdges(BW*0.9, 3.4, BD*0.9, matGhost);
+roofGhost.userData.edges.material.opacity = 0.25;
+roofGhost.position.set(0, BH + 0.52 + 1.4, 0);
+roofGhost.visible = false; mass.add(roofGhost);
+
+// --- the angled roof wedge that remains after the cut (built as a shape) ---
+function makeWedge() {
+  // a prism sloping down toward front-right, approximating the pitched cut
+  const shape = new THREE.Shape();
+  shape.moveTo(-BW/2, 0); shape.lineTo(BW/2, 0);
+  shape.lineTo(BW/2, 2.0); shape.lineTo(-BW/2, 4.6); shape.lineTo(-BW/2, 0);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: BD, bevelEnabled:false });
+  geo.translate(0, 0, -BD/2);
+  const g = new THREE.Group();
+  const m = new THREE.Mesh(geo, matRed.clone()); m.castShadow = m.receiveShadow = true;
+  g.add(m);
+  g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat.clone()));
+  return g;
+}
+const roof = makeWedge();
+roof.position.set(0, BH + 0.52, 0);
+roof.visible = false; mass.add(roof);
+
+// --- balcony cutter ghost + roof addition (step 5) ---
+const balconyGhost = boxWithEdges(3.0, 4.0, 3.4, matGhost);
+balconyGhost.position.set(-BW/2 + 1.2, BH*0.55 + 0.52, -BD/2 + 1.8);
+balconyGhost.visible = false; mass.add(balconyGhost);
+
+const roofAdd = boxWithEdges(2.2, 3.2, 2.2, matRed);
+roofAdd.position.set(2.0, BH + 0.52 + 1.6, -1.0);
+roofAdd.visible = false; mass.add(roofAdd);
+
+// --- stepped balcony notch (visible in final form) ---
+const balconyStep = boxWithEdges(2.6, 3.0, 3.0, matRed);
+balconyStep.userData.mesh.material = new THREE.MeshStandardMaterial({ color:0xd01414, roughness:0.8 });
+balconyStep.position.set(-BW/2 + 1.3, BH*0.42 + 0.52, -BD/2 + 1.7);
+balconyStep.visible = false; mass.add(balconyStep);
+
+// GSB setback leftover sliver (the white pad edge beyond the setback)
+const gsbSliver = boxWithEdges(BW, 0.6, 2.4, matWhite);
+gsbSliver.position.set(0, 0.52 + 0.3, BD/2 + 1.2);
+gsbSliver.visible = false; mass.add(gsbSliver);
+
+// ---------------------------------------------------------------------------
+// GSB dashed lines + label (step 2)
+// ---------------------------------------------------------------------------
+const gsbGroup = new THREE.Group(); scene.add(gsbGroup);
+function dashedLine(ax, az, bx, bz) {
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(ax, 1.1, az), new THREE.Vector3(bx, 1.1, bz)
+  ]);
+  const mat = new THREE.LineDashedMaterial({ color: 0xff1a1a, dashSize: 0.9, gapSize: 0.6, linewidth: 2 });
+  const line = new THREE.Line(geo, mat); line.computeLineDistances();
+  return line;
+}
+gsbGroup.add(dashedLine(-9, 3, 9, 7));
+gsbGroup.add(dashedLine(-5, 9, 7, -5));
+// GSB text label
+const gsbLabel = (() => {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ff1414'; ctx.font = 'bold 170px Arial'; ctx.textBaseline = 'middle';
+  ctx.fillText('GSB', 10, 140);
+  const tex = new THREE.CanvasTexture(c);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  spr.scale.set(7, 3.5, 1); spr.position.set(-8, 7, 6);
+  return spr;
+})();
+gsbGroup.add(gsbLabel);
+gsbGroup.visible = false;
+
+// ---------------------------------------------------------------------------
+// ARROWS  (flat yellow 3D arrows)
+// ---------------------------------------------------------------------------
+function makeArrow() {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(-1.2, 1.2); shape.lineTo(-0.5, 1.2); shape.lineTo(-0.5, 3.2);
+  shape.lineTo(0.5, 3.2); shape.lineTo(0.5, 1.2); shape.lineTo(1.2, 1.2);
+  shape.lineTo(0, 0);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.6, bevelEnabled: false });
+  geo.center();
+  const g = new THREE.Group();
+  const m = new THREE.Mesh(geo, matYellow.clone()); m.castShadow = true;
+  g.add(m);
+  return g;
+}
+// step 2 : two inward arrows
+const arrowL = makeArrow(); arrowL.position.set(-10, 2.5, 9); arrowL.rotation.set(0, Math.PI*0.25, Math.PI*0.5); arrowL.visible = false; scene.add(arrowL);
+const arrowR = makeArrow(); arrowR.position.set(12, 2.5, 2); arrowR.rotation.set(0, -Math.PI*0.75, Math.PI*0.5); arrowR.visible = false; scene.add(arrowR);
+// step 3 : downward arrow into void
+const arrowDown = makeArrow(); arrowDown.scale.set(1.3,1.3,1.3); arrowDown.position.set(1.2, 20, 0); arrowDown.rotation.set(Math.PI, 0, 0); arrowDown.visible = false; scene.add(arrowDown);
+// step 4 : arrow from lower-right into roof
+const arrowRoof = makeArrow(); arrowRoof.position.set(11, BH, 2); arrowRoof.rotation.set(0, -Math.PI*0.75, Math.PI*0.5); arrowRoof.visible = false; scene.add(arrowRoof);
+// step 5 : arrow into upper-left + small upward roof-add arrow
+const arrowBalc = makeArrow(); arrowBalc.position.set(-11, BH*0.8, -2); arrowBalc.rotation.set(0, Math.PI*0.25, Math.PI*0.5); arrowBalc.visible = false; scene.add(arrowBalc);
+const arrowUp = makeArrow(); arrowUp.position.set(2, BH+1, -1); arrowUp.rotation.set(0,0,0); arrowUp.visible = false; scene.add(arrowUp);
+
+// ---------------------------------------------------------------------------
+// ANIMATION TIMELINE
+// ---------------------------------------------------------------------------
+const STEPS = [
+  { n:1, text:'Massa dasar bangunan', dur:3.2 },
+  { n:2, text:'Penyesuaian batas massa mengikuti batas GSB', dur:4.2 },
+  { n:3, text:'Pengurangan massa di bagian tengah (void)', dur:3.8 },
+  { n:4, text:'Pemotongan massa atas untuk membentuk atap', dur:4.0 },
+  { n:5, text:'Pemotongan sisi kiri massa untuk membentuk balkon & penambahan massa untuk menyempurnakan atap', dur:4.4 },
+  { n:6, text:'Gubahan massa akhir', dur:3.6 },
+];
+const TOTAL = STEPS.reduce((a,s)=>a+s.dur, 0);
+
+const easeInOut = t => t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+const easeOut   = t => 1-Math.pow(1-t,3);
+const clamp01   = t => Math.max(0, Math.min(1, t));
+
+// caption DOM
+const capEl = document.getElementById('caption');
+const numEl = document.getElementById('stepnum');
+const txtEl = document.getElementById('captext');
+let shownStep = 0;
+function setCaption(step) {
+  if (step.n === shownStep) return;
+  shownStep = step.n;
+  capEl.classList.add('swap');
+  setTimeout(() => {
+    numEl.textContent = step.n;
+    txtEl.textContent = step.text;
+    capEl.classList.remove('swap');
+  }, 180);
+}
+
+// helper: which step + local progress for a global time
+function locate(time) {
+  let acc = 0;
+  for (let i=0;i<STEPS.length;i++){
+    if (time < acc + STEPS[i].dur || i===STEPS.length-1){
+      return { i, step: STEPS[i], local: clamp01((time-acc)/STEPS[i].dur) };
+    }
+    acc += STEPS[i].dur;
+  }
+}
+
+function applyState(time) {
+  const { i, step, local } = locate(time);
+  setCaption(step);
+
+  // ---- reset per-frame visibility; we rebuild additively ----
+  voidPart.visible = roofGhost.visible = roof.visible = false;
+  balconyGhost.visible = roofAdd.visible = balconyStep.visible = false;
+  gsbGroup.visible = false; gsbSliver.visible = false;
+  arrowL.visible = arrowR.visible = arrowDown.visible = arrowRoof.visible = arrowBalc.visible = arrowUp.visible = false;
+
+  // base always present after step 1 grow-in
+  base.visible = true;
+
+  // STEP 1 — base extrudes up
+  if (i === 0) {
+    const g = easeOut(local);
+    base.scale.y = Math.max(0.001, g);
+    base.position.y = (BH*g)/2 + 0.52;
+    base.userData.mesh.material.color.set(0xffffff);
+    base.scale.x = base.scale.z = 1;
+    base.position.x = 0; base.position.z = 0;
+    base.rotation.z = 0;
+    return;
+  }
+  base.scale.y = 1; base.position.y = BH/2 + 0.52;
+
+  // STEP 2 — GSB lines draw + arrows compress volume back
+  if (i === 1) {
+    gsbGroup.visible = true;
+    const draw = clamp01(local*2);
+    gsbGroup.children.forEach(ch => { if (ch.material) ch.material.opacity = ch.isSprite ? draw : 1; });
+    gsbLabel.material.opacity = draw;
+    const push = easeInOut(clamp01((local-0.3)/0.6));
+    arrowL.visible = arrowR.visible = local > 0.28 && local < 0.95;
+    // slide arrows inward
+    arrowL.position.set(-10 + push*3.5, 2.5, 9 - push*1.5);
+    arrowR.position.set(12 - push*3.5, 2.5, 2 + push*0.5);
+    // compress + shear the volume behind the setback
+    base.position.z = -push*1.3;
+    base.scale.z = 1 - push*0.12;
+    base.userData.mesh.material.color.set(0xffffff);
+    gsbSliver.visible = true; gsbSliver.userData.mesh.material.color.set(0xffffff);
+    return;
+  }
+  // volume stays set back for all later steps
+  base.position.z = -1.3; base.scale.z = 1 - 0.12;
+  gsbSliver.visible = true;
+
+  // from step 3 on, the mass turns coral-red
+  base.userData.mesh.material.color.set(0xf01e1e);
+  gsbSliver.userData.mesh.material.color.set(0xffffff);
+
+  // STEP 3 — void carved by downward arrow
+  if (i === 2) {
+    const dive = easeInOut(local);
+    arrowDown.visible = local < 0.9;
+    arrowDown.position.y = 20 - dive*9;
+    voidPart.visible = true;
+    const open = easeOut(clamp01((local-0.25)/0.7));
+    voidPart.scale.set(open, open, open);
+    return;
+  }
+  voidPart.visible = true; voidPart.scale.set(1,1,1);
+
+  // STEP 4 — roof slice: ghost appears, arrow pushes, wedge forms
+  if (i === 3) {
+    roofGhost.visible = true;
+    const g = easeOut(clamp01(local/0.4));
+    roofGhost.userData.mesh.material.opacity = 0.32*(1-clamp01((local-0.6)/0.4));
+    const push = easeInOut(clamp01((local-0.25)/0.55));
+    arrowRoof.visible = local > 0.2 && local < 0.92;
+    arrowRoof.position.set(11 - push*5, BH + 0.5, 2);
+    roof.visible = true;
+    roof.scale.y = Math.max(0.02, easeOut(local));
+    // trim top of base slightly to let wedge read as the cut
+    base.scale.y = 1 - 0.18*easeOut(local);
+    base.position.y = (BH*(1-0.18*easeOut(local)))/2 + 0.52;
+    roof.position.y = BH*(1-0.18*easeOut(local)) + 0.52;
+    return;
+  }
+  // persist roof cut
+  base.scale.y = 1 - 0.18; base.position.y = (BH*0.82)/2 + 0.52;
+  roof.visible = true; roof.scale.y = 1; roof.position.y = BH*0.82 + 0.52;
+
+  // STEP 5 — balcony cut (upper-left) + roof addition
+  if (i === 4) {
+    const push = easeInOut(clamp01(local/0.5));
+    arrowBalc.visible = local < 0.85;
+    arrowBalc.position.set(-11 + push*4.5, BH*0.8, -2);
+    balconyGhost.visible = local > 0.1 && local < 0.9;
+    balconyGhost.userData.mesh.material.opacity = 0.32;
+    balconyStep.visible = true;
+    const cut = easeOut(clamp01((local-0.2)/0.7));
+    balconyStep.scale.set(cut, cut, cut);
+    // roof addition extrudes up
+    const up = easeOut(clamp01((local-0.35)/0.6));
+    roofAdd.visible = true; roofAdd.scale.set(1, Math.max(0.02,up), 1);
+    roofAdd.position.y = BH + 0.52 + up*1.6;
+    arrowUp.visible = local > 0.3 && local < 0.9;
+    arrowUp.position.set(2, BH + 1 + up*2.5, -1);
+    return;
+  }
+
+  // STEP 6 — final: everything clean, no arrows/ghosts
+  balconyStep.visible = true; balconyStep.scale.set(1,1,1);
+  roofAdd.visible = true; roofAdd.scale.set(1,1,1); roofAdd.position.y = BH + 0.52 + 1.6;
+  // subtle settle pulse at the end
+  const pulse = 1 + Math.sin(locate(time).local * Math.PI) * 0.006;
+  mass.scale.setScalar(pulse);
+}
+
+// ---------------------------------------------------------------------------
+// PLAYBACK LOOP
+// ---------------------------------------------------------------------------
+let t = 0, playing = true, last = performance.now();
+const bar = document.getElementById('bar');
+
+function tick(now) {
+  const dt = Math.min(0.05, (now - last)/1000); last = now;
+  if (playing) { t += dt; if (t > TOTAL) t = 0; }
+  applyState(t);
+  bar.style.width = (t/TOTAL*100) + '%';
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+document.getElementById('replay').onclick = () => { t = 0; shownStep = 0; };
+const pauseBtn = document.getElementById('pause');
+pauseBtn.onclick = () => {
+  playing = !playing;
+  pauseBtn.textContent = playing ? '❚❚ Jeda' : '► Main';
+};
+
+resize();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
